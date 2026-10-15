@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full bg-slate-950">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gree Electric - Sistema Integrado 3D de Logística e Armazém NO003</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (xlsx) para leitura e anexos de arquivos Excel -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- Firebase Standard Web SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config Setup (Fallback for local offline testing if needed)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'gree-logistica-no003';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : {
+                apiKey: "AIzaSyDemoConfigForGreeLogisticsCoreApp",
+                authDomain: "gree-logistics.firebaseapp.com",
+                projectId: "gree-logistics",
+                storageBucket: "gree-logistics.appspot.com",
+                messagingSenderId: "123456789",
+                appId: "1:123456789:web:abcdef123456"
+            };
+
+        let app, db, auth;
+        let isCloudActive = false;
+
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            // Auth flow
+            const authPromise = typeof __initial_auth_token !== 'undefined'
+                ? signInWithCustomToken(auth, __initial_auth_token)
+                : signInAnonymously(auth);
+
+            authPromise.then((userCredential) => {
+                isCloudActive = true;
+                window.isCloudActive = true;
+                window.db = db;
+                window.appId = appId;
+                updateSyncStatus('Sincronizado em Nuvem', true);
+                subscribeToRealtimeData();
+            }).catch(err => {
+                console.warn("Nuvem em modo local/offline:", err);
+                updateSyncStatus('Modo Local (Offline)', false);
+            });
+        } catch(e) {
+            console.warn("Falha de conexão com Firebase:", e);
+            updateSyncStatus('Modo Local (LocalStorage)', false);
+        }
+
+        function updateSyncStatus(text, isOnline) {
+            const ind = document.getElementById('sync-indicator');
+            const txt = document.getElementById('sync-status');
+            if (ind && txt) {
+                txt.innerText = text;
+                if (isOnline) {
+                    ind.className = "w-3 h-3 rounded-full bg-gree-green shadow-[0_0_10px_#00a859]";
+                } else {
+                    ind.className = "w-3 h-3 rounded-full bg-amber-500 shadow-[0_0_10px_#f59e0b]";
+                }
+            }
+        }
+
+        // Realtime sync listener across computers
+        function subscribeToRealtimeData() {
+            if (!db || !window.isCloudActive) return;
+
+            const modules = ['recebimento', 'recusas', 'pendencias-clientes', 'no003'];
+            modules.forEach(m => {
+                const colRef = collection(db, 'artifacts', appId, 'public', 'data', m);
+                onSnapshot(colRef, (snapshot) => {
+                    const cloudItems = [];
+                    snapshot.forEach((doc) => {
+                        cloudItems.push(doc.data());
+                    });
+                    if (cloudItems.length > 0 || snapshot.metadata.fromCache === false) {
+                        window.appData[m] = cloudItems.sort((a,b) => new Date(b.data || 0) - new Date(a.data || 0));
+                        window.saveStorageData(false); // Save locally without overwriting cloud
+                        
+                        const currentSec = window.currentActiveSection || 'dashboard';
+                        if (currentSec === 'dashboard') {
+                            window.updateKPIs();
+                            window.renderCharts();
+                        } else if (currentSec === 'relatorios') {
+                            window.generateReport();
+                        } else if (currentSec === m) {
+                            window.renderTable(m);
+                        }
+                    }
+                }, (error) => {
+                    console.error("Erro na escuta em tempo real:", error);
+                });
+            });
+        }
+
+        // Export cloud actions to window context
+        window.cloudSave = async function(moduleName, item) {
+            if (!window.isCloudActive || !window.db) return;
+            try {
+                const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', moduleName, item.id);
+                await setDoc(docRef, item);
+            } catch(e) {
+                console.error("Erro ao salvar na nuvem:", e);
+            }
+        };
+
+        window.cloudDelete = async function(moduleName, itemId) {
+            if (!window.isCloudActive || !window.db) return;
+            try {
+                const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', moduleName, itemId);
+                await deleteDoc(docRef);
+            } catch(e) {
+                console.error("Erro ao deletar na nuvem:", e);
+            }
+        };
+    </script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        gree: {
+                            blue: '#004d9c',
+                            darkblue: '#002855',
+                            cyan: '#00a3e0',
+                            green: '#00a859',
+                            darkgreen: '#00703c',
+                            surface: '#0f172a',
+                            panel: '#1e293b'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0b1329 0%, #101d3b 50%, #070e1e 100%);
+            color: #f1f5f9;
+        }
+
+        .card-3d {
+            background: rgba(30, 41, 59, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+        }
+
+        .card-3d:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 25px 30px -5px rgba(0, 77, 156, 0.4), 0 15px 15px -5px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+            border-color: rgba(0, 163, 224, 0.4);
+        }
+
+        .btn-3d-blue {
+            background: linear-gradient(180deg, #0066cc 0%, #004d9c 100%);
+            box-shadow: 0 4px 0 #002d5e, 0 6px 10px rgba(0, 0, 0, 0.4);
+            transition: all 0.15s ease;
+        }
+        .btn-3d-blue:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #002d5e, 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .btn-3d-green {
+            background: linear-gradient(180deg, #00c86b 0%, #00a859 100%);
+            box-shadow: 0 4px 0 #006b38, 0 6px 10px rgba(0, 0, 0, 0.4);
+            transition: all 0.15s ease;
+        }
+        .btn-3d-green:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #006b38, 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .btn-3d-red {
+            background: linear-gradient(180deg, #f43f5e 0%, #e11d48 100%);
+            box-shadow: 0 4px 0 #9f1239, 0 6px 10px rgba(0, 0, 0, 0.4);
+            transition: all 0.15s ease;
+        }
+        .btn-3d-red:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #9f1239, 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .btn-3d-amber {
+            background: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+            box-shadow: 0 4px 0 #92400e, 0 6px 10px rgba(0, 0, 0, 0.4);
+            transition: all 0.15s ease;
+        }
+        .btn-3d-amber:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #92400e, 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .input-3d {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
+            color: #f8fafc;
+        }
+        .input-3d:focus {
+            outline: none;
+            border-color: #00a3e0;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6), 0 0 10px rgba(0, 163, 224, 0.5);
+        }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0, 163, 224, 0.4); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0, 163, 224, 0.8); }
+
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white !important; color: black !important; }
+            #report-print-area { border: none !important; box-shadow: none !important; background: white !important; color: black !important; }
+        }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+    <aside class="w-72 bg-slate-900/90 backdrop-blur-xl border-r border-slate-700/50 flex flex-col justify-between hidden md:flex shrink-0 shadow-2xl z-20 no-print h-full overflow-y-auto custom-scrollbar">
+        <div>
+            <!-- LOGO GREE 3D -->
+            <div class="p-5 border-b border-slate-700/60 bg-gradient-to-r from-gree-darkblue to-slate-900 flex items-center space-x-3 shadow-lg">
+                <div class="bg-gradient-to-b from-white to-slate-200 text-gree-blue font-black px-3 py-1.5 rounded-xl shadow-md text-2xl tracking-tighter border border-white/50 transform -rotate-1">
+                    GREE
+                </div>
+                <div>
+                    <h1 class="font-extrabold text-sm tracking-wider text-white leading-tight">LOGÍSTICA <span class="text-gree-green">3D</span></h1>
+                    <span class="text-[10px] text-gree-cyan uppercase tracking-widest font-bold">Armazém NO003</span>
+                </div>
+            </div>
+
+            <!-- NAVEGAÇÃO LATERAL -->
+            <nav class="p-4 space-y-2 text-sm font-semibold">
+                <button onclick="navigate('dashboard')" id="nav-dashboard" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-gree-cyan/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-chart-pie w-6 text-center text-gree-cyan text-lg"></i>
+                    <span>Dashboard Executivo</span>
+                </button>
+
+                <div class="pt-3 pb-1 px-3 text-[10px] font-black text-gree-cyan uppercase tracking-widest">Módulos de Controle</div>
+
+                <button onclick="navigate('recebimento')" id="nav-recebimento" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-blue-400/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-boxes-packing w-6 text-center text-blue-400 text-lg"></i>
+                    <span>Recebimento Materiais</span>
+                </button>
+
+                <button onclick="navigate('recusas')" id="nav-recusas" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-rose-400/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-triangle-exclamation w-6 text-center text-rose-400 text-lg"></i>
+                    <span>Recusas de PA Gree</span>
+                </button>
+
+                <button onclick="navigate('pendencias-clientes')" id="nav-pendencias-clientes" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-amber-400/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-users-gear w-6 text-center text-amber-400 text-lg"></i>
+                    <span>Pendências Clientes</span>
+                </button>
+
+                <button onclick="navigate('no003')" id="nav-no003" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-emerald-400/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-warehouse w-6 text-center text-emerald-400 text-lg"></i>
+                    <span>Armazém NO003</span>
+                </button>
+
+                <div class="pt-3 pb-1 px-3 text-[10px] font-black text-gree-cyan uppercase tracking-widest">Relatórios e Compartilhamento</div>
+
+                <button onclick="navigate('relatorios')" id="nav-relatorios" class="w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all border border-transparent hover:border-teal-400/30 text-slate-300 hover:bg-gree-blue/40 hover:text-white">
+                    <i class="fa-solid fa-file-invoice w-6 text-center text-teal-300 text-lg"></i>
+                    <span>Relatório Consolidado</span>
+                </button>
+
+                <div class="pt-3">
+                    <button onclick="copyShareLink()" class="w-full btn-3d-blue text-white font-extrabold text-xs py-3 px-4 rounded-xl flex items-center justify-center space-x-2 border border-gree-cyan/50 shadow-lg hover:scale-105 transition transform">
+                        <i class="fa-solid fa-share-nodes text-gree-cyan text-base"></i>
+                        <span>COMPARTILHAR SISTEMA</span>
+                    </button>
+                </div>
+            </nav>
+        </div>
+
+        <div class="p-4 border-t border-slate-700/60 bg-slate-950/80 flex flex-col space-y-2 mt-auto">
+            <div class="flex items-center justify-between text-xs">
+                <div class="flex items-center space-x-2">
+                    <span id="sync-indicator" class="w-3 h-3 rounded-full bg-gree-green shadow-[0_0_10px_#00a859]"></span>
+                    <span id="sync-status" class="font-bold text-slate-200 text-[11px]">Sincronizando em Tempo Real</span>
+                </div>
+            </div>
+            <div class="text-[10px] text-slate-400 font-mono truncate bg-slate-900 px-2 py-1 rounded border border-slate-800 text-center">GREE LOGISTICS 3D V5 - REALTIME</div>
+        </div>
+    </aside>
+
+    <div class="flex-1 flex flex-col h-full overflow-hidden">
+
+        <header class="bg-slate-900/80 backdrop-blur-md border-b border-slate-700/50 px-6 py-4 flex items-center justify-between shrink-0 shadow-lg z-10 no-print">
+            <div class="flex items-center space-x-3">
+                <div>
+                    <h2 id="page-title" class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-100 to-gree-cyan">Dashboard Executivo</h2>
+                    <p class="text-xs text-slate-400 font-medium">Gree Electric Appliances Brazil - Gestão Integrada NO003 em Tempo Real</p>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-3 sm:space-x-5">
+                <button onclick="copyShareLink()" class="btn-3d-green text-white font-black text-xs px-3.5 py-2 rounded-xl flex items-center shadow-md">
+                    <i class="fa-solid fa-share-nodes mr-2 text-sm"></i>
+                    <span class="hidden sm:inline">Compartilhar Link da Rede</span>
+                </button>
+
+                <div class="bg-slate-950/80 border border-slate-700 text-gree-cyan text-xs px-3 py-2 rounded-xl font-bold flex items-center shadow-inner">
+                    <i class="fa-solid fa-clock text-gree-green mr-2 text-sm"></i>
+                    <span id="current-time">--:--:--</span>
+                </div>
+                <div class="flex items-center space-x-3 border-l border-slate-700/80 pl-5">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-gree-blue to-gree-cyan text-white flex items-center justify-center font-black text-sm shadow-lg border border-white/20">
+                        GR
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main class="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
+
+            <section id="sec-dashboard" class="space-y-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <div class="card-3d p-5 rounded-2xl border-l-4 border-l-gree-blue flex items-center justify-between">
+                        <div>
+                            <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Recebimento Materiais</p>
+                            <h3 id="kpi-recebimento" class="text-3xl font-black text-white mt-1">0</h3>
+                            <span class="text-xs text-gree-green font-bold flex items-center mt-2"><i class="fa-solid fa-circle-check mr-1.5"></i>Registros Ativos</span>
+                        </div>
+                        <div class="p-4 bg-gradient-to-br from-blue-600 to-gree-blue text-white rounded-2xl shadow-lg transform rotate-3"><i class="fa-solid fa-boxes-packing text-2xl"></i></div>
+                    </div>
+
+                    <div class="card-3d p-5 rounded-2xl border-l-4 border-l-rose-500 flex items-center justify-between">
+                        <div>
+                            <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Recusas de PA Gree</p>
+                            <h3 id="kpi-recusas" class="text-3xl font-black text-white mt-1">0</h3>
+                            <span class="text-xs text-rose-400 font-bold flex items-center mt-2"><i class="fa-solid fa-triangle-exclamation mr-1.5"></i>Inspeção de Qualidade</span>
+                        </div>
+                        <div class="p-4 bg-gradient-to-br from-rose-500 to-rose-700 text-white rounded-2xl shadow-lg transform -rotate-3"><i class="fa-solid fa-ban text-2xl"></i></div>
+                    </div>
+
+                    <div class="card-3d p-5 rounded-2xl border-l-4 border-l-amber-500 flex items-center justify-between">
+                        <div>
+                            <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Pendências Clientes</p>
+                            <h3 id="kpi-pend-clientes" class="text-3xl font-black text-white mt-1">0</h3>
+                            <span class="text-xs text-amber-400 font-bold flex items-center mt-2"><i class="fa-solid fa-clock mr-1.5"></i>Aguardando Solução</span>
+                        </div>
+                        <div class="p-4 bg-gradient-to-br from-amber-500 to-amber-700 text-white rounded-2xl shadow-lg transform rotate-3"><i class="fa-solid fa-user-clock text-2xl"></i></div>
+                    </div>
+
+                    <div class="card-3d p-5 rounded-2xl border-l-4 border-l-gree-green flex items-center justify-between">
+                        <div>
+                            <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">Armazém NO003 (Drive-In)</p>
+                            <h3 id="kpi-no003" class="text-3xl font-black text-white mt-1">0</h3>
+                            <span class="text-xs text-gree-green font-bold flex items-center mt-2"><i class="fa-solid fa-warehouse mr-1.5"></i>Posições Mapeadas</span>
+                        </div>
+                        <div class="p-4 bg-gradient-to-br from-emerald-500 to-gree-darkgreen text-white rounded-2xl shadow-lg transform -rotate-3"><i class="fa-solid fa-cubes-stacked text-2xl"></i></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="card-3d p-6 rounded-2xl">
+                        <div class="flex items-center justify-between mb-5 border-b border-slate-700/60 pb-3">
+                            <h4 class="font-extrabold text-slate-100 text-base flex items-center">
+                                <i class="fa-solid fa-chart-pie text-gree-cyan mr-2.5"></i>Distribuição Geral por Módulo
+                            </h4>
+                        </div>
+                        <div class="h-64 relative flex items-center justify-center">
+                            <canvas id="chartStatus"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="card-3d p-6 rounded-2xl">
+                        <div class="flex items-center justify-between mb-5 border-b border-slate-700/60 pb-3">
+                            <h4 class="font-extrabold text-slate-100 text-base flex items-center">
+                                <i class="fa-solid fa-chart-column text-rose-400 mr-2.5"></i>Motivos de Recusas de PA Gree
+                            </h4>
+                        </div>
+                        <div class="h-64 relative flex items-center justify-center">
+                            <canvas id="chartMotivos"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="sec-recebimento" class="space-y-6 hidden">
+                <div class="card-3d p-6 rounded-2xl">
+                    <h3 class="font-black text-xl text-white mb-5 flex items-center justify-between border-b border-slate-700/60 pb-3">
+                        <span class="flex items-center">
+                            <i class="fa-solid fa-boxes-packing text-gree-cyan mr-3"></i>Registrar Entrada de Recebimento
+                        </span>
+                        <span class="text-xs bg-gree-blue/40 text-gree-cyan font-bold px-3 py-1 rounded-full border border-gree-cyan/30">Múltiplos Itens / Importação Excel</span>
+                    </h3>
+                    
+                    <form id="form-recebimento" onsubmit="handleSave(event, 'recebimento')" class="space-y-5">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Nº Nota Fiscal *</label>
+                                <input type="text" id="rec-nfe" required placeholder="Ex: NF-90812" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Fornecedor *</label>
+                                <input type="text" id="rec-fornecedor" required placeholder="Ex: Gree Components Ltd" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Lote *</label>
+                                <input type="text" id="rec-lote" required placeholder="Ex: LT-2026-X" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Status Recebimento</label>
+                                <select id="rec-status" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                    <option value="Conferido">Conferido</option>
+                                    <option value="Divergente">Divergente</option>
+                                    <option value="Em Conferência">Em Conferência</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- CONTAINER DE MÚLTIPLOS MATERIAIS E IMPORTADOR DE EXCEL -->
+                        <div class="bg-slate-950/60 p-4 rounded-xl border border-slate-700/80 space-y-3">
+                            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-2 border-b border-slate-800 gap-2">
+                                <label class="text-xs font-black text-gree-cyan uppercase tracking-wider flex items-center">
+                                    <i class="fa-solid fa-list-check mr-2"></i>Materiais & Componentes Inclusos na NF
+                                </label>
+                                <div class="flex items-center space-x-2">
+                                    <label class="btn-3d-green text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer flex items-center">
+                                        <i class="fa-solid fa-file-excel mr-1.5"></i>Importar Itens de Excel (.xlsx/.csv)
+                                        <input type="file" accept=".xlsx, .xls, .csv" onchange="importExcelToItems(this, 'container-rec-items', 'rec')" class="hidden">
+                                    </label>
+                                    <button type="button" onclick="addRecItemRow()" class="btn-3d-blue text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center">
+                                        <i class="fa-solid fa-plus mr-1.5"></i>Adicionar Item
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="container-rec-items" class="space-y-2"></div>
+                        </div>
+
+                        <!-- CAMPO DE ANEXO DE ARQUIVO EXCEL / FOTO / RELATÓRIO -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                            <div>
+                                <label class="block text-xs font-bold text-gree-cyan mb-1.5 flex items-center">
+                                    <i class="fa-solid fa-paperclip mr-2 text-base"></i>Anexar Foto da Avaria ou Relatório Excel/PDF
+                                </label>
+                                <input type="file" id="rec-foto" accept="image/*, .xlsx, .xls, .csv, .pdf" onchange="previewFile(this, 'rec-preview', 'rec-file-info')" class="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-gree-blue file:text-white hover:file:bg-blue-600 cursor-pointer">
+                                <div id="rec-file-info" class="mt-2 text-xs text-gree-green font-bold hidden flex items-center"></div>
+                                <div id="rec-preview" class="mt-2 hidden"><img src="" class="h-16 w-16 object-cover rounded-xl border border-gree-cyan shadow-md"></div>
+                            </div>
+                            <div class="flex justify-end">
+                                <button type="submit" class="btn-3d-blue text-white font-extrabold text-sm px-8 py-3 rounded-xl flex items-center w-full sm:w-auto justify-center">
+                                    <i class="fa-solid fa-floppy-disk mr-2"></i>Salvar Recebimento
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card-3d rounded-2xl overflow-hidden">
+                    <div class="p-4 border-b border-slate-700/60 bg-slate-900/60 flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <input type="text" id="search-recebimento" oninput="renderTable('recebimento')" placeholder="Buscar por NF, fornecedor ou material..." class="input-3d px-4 py-2 text-sm rounded-xl w-full sm:w-80">
+                        <button onclick="exportCSV('recebimento')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-4 py-2.5 rounded-xl border border-slate-600 flex items-center self-end">
+                            <i class="fa-solid fa-file-csv mr-2 text-gree-green text-base"></i>Exportar CSV
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-950/80 text-slate-300 uppercase text-[11px] font-black tracking-wider border-b border-slate-700">
+                                    <th class="p-4">Anexo / Arquivo</th>
+                                    <th class="p-4">Data</th>
+                                    <th class="p-4">Nº NF / Fornecedor</th>
+                                    <th class="p-4">Materiais & Códigos</th>
+                                    <th class="p-4 text-center">Qtd Total</th>
+                                    <th class="p-4">Lote</th>
+                                    <th class="p-4">Status</th>
+                                    <th class="p-4 text-right">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-recebimento" class="divide-y divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="sec-recusas" class="space-y-6 hidden">
+                <div class="card-3d p-6 rounded-2xl border-t-4 border-t-rose-500">
+                    <h3 class="font-black text-xl text-white mb-5 flex items-center justify-between border-b border-slate-700/60 pb-3">
+                        <span class="flex items-center">
+                            <i class="fa-solid fa-ban text-rose-500 mr-3"></i>Registrar Recusa de Produto Acabado (PA Gree)
+                        </span>
+                        <span class="text-xs bg-rose-950/60 text-rose-300 font-bold px-3 py-1 rounded-full border border-rose-500/40">Suporta Foto, Excel e PDFs em Anexo</span>
+                    </h3>
+
+                    <form id="form-recusas" onsubmit="handleSave(event, 'recusas')" class="space-y-5">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Cliente / Destino *</label>
+                                <input type="text" id="recusa-cliente" required placeholder="Ex: Magalu / Casas Bahia" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Nº NF de Venda *</label>
+                                <input type="text" id="recusa-nf" required placeholder="Ex: NF-77812" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Motivo da Recusa *</label>
+                                <select id="recusa-motivo" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                    <option value="Avaria de Transporte">Avaria de Transporte</option>
+                                    <option value="Defeito Funcional">Defeito Funcional</option>
+                                    <option value="Embalagem Danificada">Embalagem Danificada</option>
+                                    <option value="Divergência de Pedido">Divergência de Pedido</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-slate-300 mb-1.5">Ação Tomada</label>
+                                <select id="recusa-acao" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                    <option value="Rework / Reembalagem">Rework / Reembalagem</option>
+                                    <option value="Devolução Fábrica">Devolução Fábrica</option>
+                                    <option value="Sucata / Descarte">Sucata / Descarte</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- CONTAINER MÚLTIPLOS CÓDIGOS DE PA E IMPORTADOR EXCEL -->
+                        <div class="bg-slate-950/60 p-4 rounded-xl border border-slate-700/80 space-y-3">
+                            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-2 border-b border-slate-800 gap-2">
+                                <label class="text-xs font-black text-rose-400 uppercase tracking-wider flex items-center">
+                                    <i class="fa-solid fa-layer-group mr-2"></i>Códigos de Produtos Acabados (PA Gree)
+                                </label>
+                                <div class="flex items-center space-x-2">
+                                    <label class="btn-3d-green text-white text-xs font-bold px-3 py-1.5 rounded-lg cursor-pointer flex items-center">
+                                        <i class="fa-solid fa-file-excel mr-1.5"></i>Importar Excel com Códigos PA
+                                        <input type="file" accept=".xlsx, .xls, .csv" onchange="importExcelToItems(this, 'container-pa-items', 'pa')" class="hidden">
+                                    </label>
+                                    <button type="button" onclick="addPAItemRow()" class="btn-3d-red text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center">
+                                        <i class="fa-solid fa-plus mr-1.5"></i>Adicionar Código PA
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="container-pa-items" class="space-y-2"></div>
+                        </div>
+
+                        <!-- SUPORTE A ANEXAR FOTO OU ARQUIVO EXCEL / RELATÓRIO DO CLIENTE -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                            <div>
+                                <label class="block text-xs font-bold text-rose-400 mb-1.5 flex items-center">
+                                    <i class="fa-solid fa-file-arrow-up mr-2 text-base"></i>Foto da Avaria OU Anexar Relatório Excel/PDF do Cliente
+                                </label>
+                                <input type="file" id="recusa-foto" accept="image/*, .xlsx, .xls, .csv, .pdf" onchange="previewFile(this, 'recusa-preview', 'recusa-file-info')" class="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-rose-600 file:text-white hover:file:bg-rose-700 cursor-pointer">
+                                <div id="recusa-file-info" class="mt-2 text-xs text-rose-300 font-bold hidden flex items-center"></div>
+                                <div id="recusa-preview" class="mt-2 hidden"><img src="" class="h-16 w-16 object-cover rounded-xl border border-rose-500 shadow-md"></div>
+                            </div>
+                            <div class="flex justify-end">
+                                <button type="submit" class="btn-3d-red text-white font-extrabold text-sm px-8 py-3 rounded-xl flex items-center w-full sm:w-auto justify-center">
+                                    <i class="fa-solid fa-floppy-disk mr-2"></i>Registrar Recusa PA
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card-3d rounded-2xl overflow-hidden">
+                    <div class="p-4 border-b border-slate-700/60 bg-slate-900/60 flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <input type="text" id="search-recusas" oninput="renderTable('recusas')" placeholder="Buscar por código PA, cliente ou NF..." class="input-3d px-4 py-2 text-sm rounded-xl w-full sm:w-80">
+                        <button onclick="exportCSV('recusas')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-4 py-2.5 rounded-xl border border-slate-600 flex items-center self-end">
+                            <i class="fa-solid fa-file-csv mr-2 text-rose-400 text-base"></i>Exportar CSV
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-950/80 text-slate-300 uppercase text-[11px] font-black tracking-wider border-b border-slate-700">
+                                    <th class="p-4">Anexo / Arquivo</th>
+                                    <th class="p-4">Data</th>
+                                    <th class="p-4">Cliente / NF</th>
+                                    <th class="p-4">Códigos & Modelos Recusados</th>
+                                    <th class="p-4 text-center">Qtd Total</th>
+                                    <th class="p-4">Motivo Recusa</th>
+                                    <th class="p-4">Ação Tomada</th>
+                                    <th class="p-4 text-right">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-recusas" class="divide-y divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="sec-pendencias-clientes" class="space-y-6 hidden">
+                <div class="card-3d p-6 rounded-2xl border-t-4 border-t-amber-500">
+                    <h3 class="font-black text-xl text-white mb-5 flex items-center border-b border-slate-700/60 pb-3">
+                        <i class="fa-solid fa-users-gear text-amber-500 mr-3"></i>Registrar Pendência de Cliente Externo
+                    </h3>
+                    <form id="form-pendencias-clientes" onsubmit="handleSave(event, 'pendencias-clientes')" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Cliente Destino *</label>
+                            <input type="text" id="pendcli-destino" required placeholder="Ex: Leveros Ar Condicionado" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Código Item / PA *</label>
+                            <input type="text" id="pendcli-codigo" required placeholder="Ex: GREE-MULTI-24K" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Quantidade *</label>
+                            <input type="number" step="1" min="1" id="pendcli-qtd" required placeholder="0" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Status Pendência</label>
+                            <select id="pendcli-status" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                <option value="Aguardando Estoque">Aguardando Estoque</option>
+                                <option value="Separação Pendente">Separação Pendente</option>
+                                <option value="Aguardando Coleta">Aguardando Coleta</option>
+                                <option value="Resolvido">Resolvido</option>
+                            </select>
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-3">
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Observações da Pendência *</label>
+                            <input type="text" id="pendcli-obs" required placeholder="Ex: Falta de peça evaporadora para completar kit" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Foto ou Relatório (Excel/PDF)</label>
+                            <input type="file" id="pendcli-foto" accept="image/*, .xlsx, .xls, .csv, .pdf" onchange="previewFile(this, 'pendcli-preview', 'pendcli-file-info')" class="w-full text-xs text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-amber-500 file:text-white cursor-pointer">
+                            <div id="pendcli-file-info" class="mt-2 text-xs text-amber-300 font-bold hidden flex items-center"></div>
+                            <div id="pendcli-preview" class="mt-2 hidden"><img src="" class="h-12 w-12 object-cover rounded-xl border border-amber-500"></div>
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-4 flex justify-end pt-2">
+                            <button type="submit" class="btn-3d-amber text-white font-extrabold text-sm px-8 py-3 rounded-xl flex items-center">
+                                <i class="fa-solid fa-floppy-disk mr-2"></i>Salvar Pendência
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card-3d rounded-2xl overflow-hidden">
+                    <div class="p-4 border-b border-slate-700/60 bg-slate-900/60 flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <input type="text" id="search-pendencias-clientes" oninput="renderTable('pendencias-clientes')" placeholder="Buscar pendência..." class="input-3d px-4 py-2 text-sm rounded-xl w-full sm:w-80">
+                        <button onclick="exportCSV('pendencias-clientes')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-4 py-2.5 rounded-xl border border-slate-600 flex items-center self-end">
+                            <i class="fa-solid fa-file-csv mr-2 text-amber-400 text-base"></i>Exportar CSV
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-950/80 text-slate-300 uppercase text-[11px] font-black tracking-wider border-b border-slate-700">
+                                    <th class="p-4">Anexo / Arquivo</th>
+                                    <th class="p-4">Data</th>
+                                    <th class="p-4">Cliente</th>
+                                    <th class="p-4">Código Item</th>
+                                    <th class="p-4">Qtd</th>
+                                    <th class="p-4">Status</th>
+                                    <th class="p-4">Observações</th>
+                                    <th class="p-4 text-right">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-pendencias-clientes" class="divide-y divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="sec-no003" class="space-y-6 hidden">
+                <div class="card-3d p-6 rounded-2xl border-t-4 border-t-emerald-500">
+                    <h3 class="font-black text-xl text-white mb-5 flex items-center border-b border-slate-700/60 pb-3">
+                        <i class="fa-solid fa-warehouse text-emerald-400 mr-3"></i>Registrar Posição Pendente no Armazém NO003
+                    </h3>
+                    <form id="form-no003" onsubmit="handleSave(event, 'no003')" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Posição Drive-In *</label>
+                            <input type="text" id="no003-posicao" required placeholder="Ex: DRIVE-A-04-02" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Código do Material/PA *</label>
+                            <input type="text" id="no003-codigo" required placeholder="Ex: PA-GREE-HIWALL" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl uppercase">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Quantidade *</label>
+                            <input type="number" step="1" min="1" id="no003-qtd" required placeholder="0" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Prioridade</label>
+                            <select id="no003-prioridade" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                <option value="Crítica">Crítica</option>
+                                <option value="Alta">Alta</option>
+                                <option value="Média">Média</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Status NO003</label>
+                            <select id="no003-status" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                <option value="Alocado em Trânsito">Alocado em Trânsito</option>
+                                <option value="Bloqueado CQ">Bloqueado CQ</option>
+                                <option value="Liberado">Liberado</option>
+                            </select>
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Anexo (Foto / Excel / PDF)</label>
+                            <input type="file" id="no003-foto" accept="image/*, .xlsx, .xls, .csv, .pdf" onchange="previewFile(this, 'no003-preview', 'no003-file-info')" class="w-full text-xs text-slate-400 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-gree-green file:text-white cursor-pointer">
+                            <div id="no003-file-info" class="mt-2 text-xs text-gree-green font-bold hidden flex items-center"></div>
+                            <div id="no003-preview" class="mt-2 hidden"><img src="" class="h-12 w-12 object-cover rounded-xl border border-gree-green"></div>
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-4 flex justify-end pt-2">
+                            <button type="submit" class="btn-3d-green text-white font-extrabold text-sm px-8 py-3 rounded-xl flex items-center">
+                                <i class="fa-solid fa-floppy-disk mr-2"></i>Registrar em NO003
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="card-3d rounded-2xl overflow-hidden">
+                    <div class="p-4 border-b border-slate-700/60 bg-slate-900/60 flex flex-col sm:flex-row items-center justify-between gap-3">
+                        <input type="text" id="search-no003" oninput="renderTable('no003')" placeholder="Buscar por posição ou código..." class="input-3d px-4 py-2 text-sm rounded-xl w-full sm:w-80">
+                        <button onclick="exportCSV('no003')" class="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs px-4 py-2.5 rounded-xl border border-slate-600 flex items-center self-end">
+                            <i class="fa-solid fa-file-csv mr-2 text-gree-green text-base"></i>Exportar CSV
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-950/80 text-slate-300 uppercase text-[11px] font-black tracking-wider border-b border-slate-700">
+                                    <th class="p-4">Anexo / Arquivo</th>
+                                    <th class="p-4">Data</th>
+                                    <th class="p-4">Posição Drive-In</th>
+                                    <th class="p-4">Código</th>
+                                    <th class="p-4">Qtd</th>
+                                    <th class="p-4">Prioridade</th>
+                                    <th class="p-4">Status</th>
+                                    <th class="p-4 text-right">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-no003" class="divide-y divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section id="sec-relatorios" class="space-y-6 hidden">
+                <div class="card-3d p-6 rounded-2xl no-print">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5 border-b border-slate-700/60 pb-4">
+                        <div>
+                            <h3 class="font-black text-xl text-white flex items-center">
+                                <i class="fa-solid fa-file-invoice text-gree-cyan mr-3"></i>Gerador de Relatórios Executivos
+                            </h3>
+                            <p class="text-xs text-slate-400">Emissão oficial para auditoria de contingências logísticas da Gree</p>
+                        </div>
+                        <div class="flex items-center space-x-3">
+                            <button onclick="window.print()" class="btn-3d-blue text-white font-extrabold text-xs px-5 py-3 rounded-xl flex items-center">
+                                <i class="fa-solid fa-print mr-2"></i>Imprimir / Salvar PDF
+                            </button>
+                            <button onclick="exportCSV('all')" class="btn-3d-green text-white font-extrabold text-xs px-5 py-3 rounded-xl flex items-center">
+                                <i class="fa-solid fa-download mr-2"></i>Exportar Relatório Geral Excel
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1.5">Filtrar por Módulo</label>
+                            <select id="relatorio-filtro-modulo" onchange="generateReport()" class="input-3d w-full px-3.5 py-2.5 text-sm rounded-xl">
+                                <option value="TODOS">Todos os Módulos Logísticos</option>
+                                <option value="recusas">Somente Recusas de PA</option>
+                                <option value="pendencias-clientes">Somente Pendências de Clientes</option>
+                                <option value="no003">Somente Armazém NO003</option>
+                                <option value="recebimento">Somente Recebimento Materiais</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="report-print-area" class="bg-slate-900 p-8 rounded-2xl border border-slate-700 shadow-2xl max-w-5xl mx-auto space-y-6">
+                    <div class="flex items-center justify-between border-b-2 border-gree-cyan pb-4">
+                        <div class="flex items-center space-x-3">
+                            <div class="bg-gree-blue text-white font-black px-3 py-1.5 rounded-lg text-2xl tracking-tighter">
+                                GREE
+                            </div>
+                            <div>
+                                <h1 class="text-xl font-black text-white">GREE ELECTRIC APPLIANCES BRAZIL</h1>
+                                <p class="text-xs text-slate-400 font-bold">Relatório Integrado de Controle de Qualidade e Estoque</p>
+                            </div>
+                        </div>
+                        <div class="text-right text-xs text-slate-400">
+                            <div><strong class="text-slate-200">Emissão:</strong> <span id="report-date">--/--/----</span></div>
+                            <div><strong class="text-slate-200">Unidade:</strong> Armazém NO003</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4 text-center">
+                        <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+                            <span class="text-[10px] font-black text-slate-400 uppercase">Total Recusas PA</span>
+                            <div id="report-summary-recusas" class="text-2xl font-black text-rose-500 mt-1">0</div>
+                        </div>
+                        <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+                            <span class="text-[10px] font-black text-slate-400 uppercase">Total Pendências</span>
+                            <div id="report-summary-pendencias" class="text-2xl font-black text-amber-500 mt-1">0</div>
+                        </div>
+                        <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+                            <span class="text-[10px] font-black text-slate-400 uppercase">Drive-In NO003</span>
+                            <div id="report-summary-no003" class="text-2xl font-black text-gree-cyan mt-1">0</div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h3 class="font-extrabold text-slate-200 text-sm uppercase tracking-wider mb-3 border-l-4 border-gree-cyan pl-3">Detalhamento dos Registros</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-gree-blue text-white font-bold uppercase">
+                                        <th class="p-3">Anexo</th>
+                                        <th class="p-3">Módulo</th>
+                                        <th class="p-3">Código / Item</th>
+                                        <th class="p-3">Qtd</th>
+                                        <th class="p-3">Cliente / Ref</th>
+                                        <th class="p-3">Status / Motivo</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="report-table-body" class="divide-y divide-slate-800 border-b border-slate-800"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <div id="image-modal" class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md hidden flex items-center justify-center p-4 no-print" onclick="closeImageModal()">
+        <div class="card-3d p-6 rounded-3xl max-w-3xl max-h-[85vh] w-full flex flex-col items-center relative shadow-2xl" onclick="event.stopPropagation()">
+            <button onclick="closeImageModal()" class="absolute top-4 right-4 bg-rose-600 text-white w-9 h-9 rounded-full font-black hover:bg-rose-700 transition">✕</button>
+            
+            <div id="modal-content-area" class="w-full flex flex-col items-center justify-center space-y-4">
+                <img id="modal-img-src" src="" class="max-h-[60vh] w-auto object-contain rounded-2xl border border-slate-700 hidden">
+                <div id="modal-doc-preview" class="w-full bg-slate-900 border border-slate-700 rounded-2xl p-6 text-center space-y-3 hidden">
+                    <i id="modal-doc-icon" class="fa-solid fa-file-excel text-5xl text-emerald-400"></i>
+                    <h4 id="modal-doc-name" class="font-bold text-white text-base">Nome do Documento.xlsx</h4>
+                    <p class="text-xs text-slate-400">Este arquivo é um documento em anexo (Excel / PDF / CSV)</p>
+                </div>
+            </div>
+
+            <div class="mt-4 flex items-center space-x-3 w-full justify-between border-t border-slate-800 pt-3">
+                <p id="modal-img-caption" class="text-xs font-bold text-slate-300 truncate max-w-sm"></p>
+                <a id="modal-download-btn" href="" download="" class="btn-3d-green text-white font-extrabold text-xs px-5 py-2.5 rounded-xl flex items-center shadow-lg">
+                    <i class="fa-solid fa-download mr-2 text-sm"></i>Baixar Arquivo Anexo
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- NOTIFICAÇÃO TOAST 3D -->
+    <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-24 opacity-0 transition-all duration-300 bg-slate-900/90 backdrop-blur-xl text-white px-5 py-4 rounded-2xl shadow-2xl flex items-center space-x-3 border border-slate-700 no-print">
+        <i id="toast-icon" class="fa-solid fa-circle-check text-gree-green text-2xl"></i>
+        <span id="toast-message" class="text-xs font-bold">Operação realizada com sucesso!</span>
+    </div>
+
+    <script>
+        const SVG_SPLIT = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'><rect width='100%' height='100%' fill='%23004d9c'/><text x='50%' y='50%' fill='white' font-size='12' font-family='sans-serif' text-anchor='middle' dominant-baseline='middle'>GREE PA</text></svg>";
+        const STORAGE_KEY = 'GREE_LOGISTICA_3D_V5';
+
+        window.currentActiveSection = 'dashboard';
+
+        window.appData = {
+            recebimento: [],
+            recusas: [],
+            'pendencias-clientes': [],
+            no003: []
+        };
+
+        let chartStatusInstance = null;
+        let chartMotivosInstance = null;
+
+        window.addEventListener('load', function() {
+            updateClock();
+            setInterval(updateClock, 1000);
+            loadStorageData();
+            addPAItemRow();
+            addRecItemRow();
+            navigate('dashboard');
+        });
+
+        function loadStorageData() {
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (saved) {
+                    window.appData = JSON.parse(saved);
+                } else {
+                    window.appData = {
+                        recebimento: [
+                            { id: 'REC-101', data: new Date().toLocaleString('pt-BR'), nfe: 'NF-90812', fornecedor: 'Gree Components Ltd', lote: 'LT-2026-X', status: 'Conferido', foto: SVG_SPLIT, fileType: 'image', fileName: 'Etiqueta.png', items: [{ codigo: 'COMP-A1', descricao: 'Compressor Inverter 18k', qtd: 50 }] }
+                        ],
+                        recusas: [
+                            { id: 'RECUSA-101', data: new Date().toLocaleString('pt-BR'), cliente: 'Magalu / SP', nf: 'NF-77812', motivo: 'Avaria de Transporte', acao: 'Rework / Reembalagem', foto: SVG_SPLIT, fileType: 'image', fileName: 'Laudo.png', items: [{ codigo: 'GREE-SPLIT-18K', descricao: 'Ar Condicionado Hi-Wall 18000 BTUs', qtd: 4 }] }
+                        ],
+                        'pendencias-clientes': [
+                            { id: 'PEND-101', data: new Date().toLocaleString('pt-BR'), destino: 'Leveros Ar Condicionado', codigo: 'GREE-MULTI-24K', qtd: 2, status: 'Aguardando Estoque', obs: 'Falta unidade condensadora', foto: SVG_SPLIT, fileType: 'image', fileName: 'Item.png' }
+                        ],
+                        no003: [
+                            { id: 'NO-101', data: new Date().toLocaleString('pt-BR'), posicao: 'DRIVE-A-04-02', codigo: 'PA-GREE-HIWALL', qtd: 12, prioridade: 'Crítica', status: 'Alocado em Trânsito', foto: SVG_SPLIT, fileType: 'image', fileName: 'Posicao.png' }
+                        ]
+                    };
+                    saveStorageData(true);
+                }
+            } catch (e) {
+                console.error("Erro ao carregar dados", e);
+            }
+        }
+
+        window.saveStorageData = function(updateCloud = true) {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(window.appData));
+            } catch (e) {
+                console.error("Erro ao salvar dados", e);
+            }
+        };
+
+        // PREVISÃO E SUPORTE COMPLETO A EXCEL, PDF E IMAGENS
+        window.previewFile = function(input, previewId, fileInfoId) {
+            const previewContainer = document.getElementById(previewId);
+            const fileInfoContainer = document.getElementById(fileInfoId);
+            
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                const fileName = file.name;
+                const fileType = file.type || '';
+
+                if (fileType.includes('image')) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const img = previewContainer.querySelector('img');
+                        if (img) img.src = e.target.result;
+                        previewContainer.classList.remove('hidden');
+                        if (fileInfoContainer) {
+                            fileInfoContainer.innerHTML = `<i class="fa-solid fa-file-image mr-1.5"></i> Imagem Selecionada: <strong>${fileName}</strong>`;
+                            fileInfoContainer.classList.remove('hidden');
+                        }
+                    }
+                    reader.readAsDataURL(file);
+                } else {
+                    previewContainer.classList.add('hidden');
+                    if (fileInfoContainer) {
+                        let icon = 'fa-file-excel text-emerald-400';
+                        if (fileName.endsWith('.pdf')) icon = 'fa-file-pdf text-rose-400';
+                        fileInfoContainer.innerHTML = `<i class="fa-solid ${icon} mr-1.5 text-lg"></i> Anexo Selecionado: <strong>${fileName}</strong>`;
+                        fileInfoContainer.classList.remove('hidden');
+                    }
+                }
+            }
+        };
+
+        // IMPORTADOR DE PLANILHAS EXCEL COM SHEETJS
+        window.importExcelToItems = function(input, containerId, prefix) {
+            if (!input.files || !input.files[0]) return;
+            const file = input.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheetName = workbook.SheetNames[0];
+                    const worksheet = workbook.Sheets[firstSheetName];
+                    const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                    if (json.length < 1) {
+                        showToast('Planilha vazia!');
+                        return;
+                    }
+
+                    const container = document.getElementById(containerId);
+                    container.innerHTML = '';
+
+                    let startRow = (typeof json[0][0] === 'string' && isNaN(json[0][0])) ? 1 : 0;
+                    let count = 0;
+
+                    for (let i = startRow; i < json.length; i++) {
+                        const row = json[i];
+                        if (row && row.length > 0) {
+                            const colCodigo = String(row[0] || '').trim();
+                            const colDesc = String(row[1] || 'Importado de Excel').trim();
+                            const colQtd = parseFloat(row[2]) || 1;
+
+                            if (colCodigo) {
+                                if (prefix === 'pa') {
+                                    addPAItemRow(colCodigo, colDesc, colQtd);
+                                } else {
+                                    addRecItemRow(colCodigo, colDesc, colQtd);
+                                }
+                                count++;
+                            }
+                        }
+                    }
+
+                    showToast(`${count} itens carregados da planilha!`);
+                } catch (err) {
+                    console.error("Erro ao ler Excel", err);
+                    showToast('Erro ao ler a planilha Excel!');
+                }
+            };
+
+            reader.readAsArrayBuffer(file);
+        };
+
+        window.handleSave = function(event, module) {
+            event.preventDefault();
+
+            const now = new Date().toLocaleString('pt-BR');
+            const itemId = 'ID-' + Date.now();
+            let newItem = { id: itemId, data: now };
+
+            const processFileAndSave = function(inputId, previewId, callback) {
+                const fileInput = document.getElementById(inputId);
+                if (fileInput && fileInput.files && fileInput.files[0]) {
+                    const file = fileInput.files[0];
+                    const isImg = file.type.includes('image');
+                    const reader = new FileReader();
+
+                    reader.onload = function(e) {
+                        newItem.foto = e.target.result;
+                        newItem.fileType = isImg ? 'image' : 'document';
+                        newItem.fileName = file.name;
+                        callback();
+                    };
+
+                    reader.readAsDataURL(file);
+                } else {
+                    newItem.foto = SVG_SPLIT;
+                    newItem.fileType = 'image';
+                    newItem.fileName = 'Sem Anexo';
+                    callback();
+                }
+            };
+
+            processFileAndSave(
+                module === 'recusas' ? 'recusa-foto' : (module === 'recebimento' ? 'rec-foto' : (module === 'pendencias-clientes' ? 'pendcli-foto' : 'no003-foto')),
+                module === 'recusas' ? 'recusa-preview' : (module === 'recebimento' ? 'rec-preview' : (module === 'pendencias-clientes' ? 'pendcli-preview' : 'no003-preview')),
+                function() {
+                    if (module === 'recusas') {
+                        newItem.cliente = document.getElementById('recusa-cliente').value;
+                        newItem.nf = document.getElementById('recusa-nf').value;
+                        newItem.motivo = document.getElementById('recusa-motivo').value;
+                        newItem.acao = document.getElementById('recusa-acao').value;
+
+                        const rows = document.querySelectorAll('.pa-item-row');
+                        newItem.items = [];
+                        rows.forEach(r => {
+                            const c = r.querySelector('.pa-codigo').value.toUpperCase().trim();
+                            const d = r.querySelector('.pa-descricao').value.trim();
+                            const q = parseInt(r.querySelector('.pa-qtd').value) || 1;
+                            if (c) newItem.items.push({ codigo: c, descricao: d, qtd: q });
+                        });
+
+                        document.getElementById('form-recusas').reset();
+                        document.getElementById('container-pa-items').innerHTML = '';
+                        addPAItemRow();
+                        document.getElementById('recusa-preview').classList.add('hidden');
+                        document.getElementById('recusa-file-info').classList.add('hidden');
+                    }
+                    else if (module === 'recebimento') {
+                        newItem.nfe = document.getElementById('rec-nfe').value;
+                        newItem.fornecedor = document.getElementById('rec-fornecedor').value;
+                        newItem.lote = document.getElementById('rec-lote').value;
+                        newItem.status = document.getElementById('rec-status').value;
+
+                        const rows = document.querySelectorAll('.rec-item-row');
+                        newItem.items = [];
+                        rows.forEach(r => {
+                            const c = r.querySelector('.rec-codigo').value.toUpperCase().trim();
+                            const d = r.querySelector('.rec-descricao').value.trim();
+                            const q = parseFloat(r.querySelector('.rec-qtd').value) || 1;
+                            if (c) newItem.items.push({ codigo: c, descricao: d, qtd: q });
+                        });
+
+                        document.getElementById('form-recebimento').reset();
+                        document.getElementById('container-rec-items').innerHTML = '';
+                        addRecItemRow();
+                        document.getElementById('rec-preview').classList.add('hidden');
+                        document.getElementById('rec-file-info').classList.add('hidden');
+                    }
+                    else if (module === 'pendencias-clientes') {
+                        newItem.destino = document.getElementById('pendcli-destino').value;
+                        newItem.codigo = document.getElementById('pendcli-codigo').value.toUpperCase();
+                        newItem.qtd = parseInt(document.getElementById('pendcli-qtd').value);
+                        newItem.status = document.getElementById('pendcli-status').value;
+                        newItem.obs = document.getElementById('pendcli-obs').value;
+
+                        document.getElementById('form-pendencias-clientes').reset();
+                        document.getElementById('pendcli-preview').classList.add('hidden');
+                        document.getElementById('pendcli-file-info').classList.add('hidden');
+                    }
+                    else if (module === 'no003') {
+                        newItem.posicao = document.getElementById('no003-posicao').value.toUpperCase();
+                        newItem.codigo = document.getElementById('no003-codigo').value.toUpperCase();
+                        newItem.qtd = parseInt(document.getElementById('no003-qtd').value);
+                        newItem.prioridade = document.getElementById('no003-prioridade').value;
+                        newItem.status = document.getElementById('no003-status').value;
+
+                        document.getElementById('form-no003').reset();
+                        document.getElementById('no003-preview').classList.add('hidden');
+                        document.getElementById('no003-file-info').classList.add('hidden');
+                    }
+
+                    if (!window.appData[module]) window.appData[module] = [];
+                    window.appData[module].unshift(newItem);
+                    saveStorageData(true);
+
+                    // Cloud sync push
+                    if (window.cloudSave) window.cloudSave(module, newItem);
+
+                    showToast('Registro salvo e sincronizado!');
+                    renderTable(module);
+                    updateKPIs();
+                }
+            );
+        };
+
+        window.deleteItem = function(module, id) {
+            if (!confirm('Deseja realmente excluir este registro?')) return;
+            window.appData[module] = window.appData[module].filter(item => item.id !== id);
+            saveStorageData(true);
+
+            if (window.cloudDelete) window.cloudDelete(module, id);
+
+            showToast('Registro removido!');
+            renderTable(module);
+            updateKPIs();
+        };
+
+        window.copyShareLink = function() {
+            const url = window.location.href;
+            const dummy = document.createElement('input');
+            document.body.appendChild(dummy);
+            dummy.value = url;
+            dummy.select();
+            document.execCommand('copy');
+            document.body.removeChild(dummy);
+            showToast('Link do sistema copiado! Envie para sua equipe.');
+        };
+
+        window.renderTable = function(module) {
+            const tbody = document.getElementById('tbody-' + module);
+            if (!tbody) return;
+
+            const search = (document.getElementById('search-' + module)?.value || '').toLowerCase();
+            let list = (window.appData[module] || []).filter(item => JSON.stringify(item).toLowerCase().includes(search));
+
+            if (list.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="p-6 text-center text-slate-500 font-semibold">Nenhum registro encontrado.</td></tr>`;
+                return;
+            }
+
+            let html = '';
+            list.forEach(item => {
+                let attachmentBtn = '';
+                const fileData = item.foto || SVG_SPLIT;
+                const fileName = item.fileName || 'Anexo';
+
+                if (item.fileType === 'document' || fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.pdf') || fileName.endsWith('.csv')) {
+                    let docIcon = 'fa-file-excel text-emerald-400';
+                    if (fileName.endsWith('.pdf')) docIcon = 'fa-file-pdf text-rose-400';
+                    
+                    attachmentBtn = `
+                        <div onclick="openDocumentModal('${fileData}', '${fileName}')" class="flex items-center space-x-2 bg-slate-900 text-gree-cyan border border-gree-cyan/50 px-3 py-1.5 rounded-xl cursor-pointer hover:bg-gree-blue hover:text-white transition text-xs font-bold shadow-md">
+                            <i class="fa-solid ${docIcon} text-base"></i>
+                            <span class="truncate max-w-[120px]" title="${fileName}">${fileName}</span>
+                            <i class="fa-solid fa-download text-[10px] text-slate-400"></i>
+                        </div>
+                    `;
+                } else {
+                    attachmentBtn = `
+                        <div onclick="openImageModal('${fileData}', '${fileName}')" class="relative group cursor-pointer">
+                            <img src="${fileData}" class="w-10 h-10 object-cover rounded-xl border border-slate-700 group-hover:border-gree-cyan transition shadow-md">
+                            <div class="absolute inset-0 bg-slate-950/40 rounded-xl opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs">
+                                <i class="fa-solid fa-eye"></i>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                if (module === 'recusas') {
+                    const items = item.items || [{ codigo: item.codigo || 'N/A', descricao: item.descricao || '', qtd: item.qtd || 0 }];
+                    const totalQtd = items.reduce((acc, curr) => acc + (parseInt(curr.qtd) || 0), 0);
+                    const badges = items.map(it => `
+                        <div class="bg-rose-950/40 border border-rose-500/30 rounded-lg p-1.5 mb-1 text-xs">
+                            <span class="font-black text-rose-400">[${it.codigo}]</span>
+                            <span class="text-slate-300">${it.descricao}</span>
+                            <span class="ml-1 bg-rose-600 text-white font-extrabold px-1.5 py-0.5 rounded text-[10px]">x${it.qtd}</span>
+                        </div>
+                    `).join('');
+
+                    html += `
+                        <tr class="hover:bg-slate-900/40">
+                            <td class="p-4">${attachmentBtn}</td>
+                            <td class="p-4 text-xs text-slate-400">${item.data}</td>
+                            <td class="p-4 text-xs">
+                                <div class="font-bold text-slate-100">${item.cliente}</div>
+                                <div class="text-slate-400 font-mono">${item.nf}</div>
+                            </td>
+                            <td class="p-4 min-w-[250px]">${badges}</td>
+                            <td class="p-4 text-center font-black text-rose-400 text-base">${totalQtd}</td>
+                            <td class="p-4 text-xs font-semibold text-rose-300">${item.motivo}</td>
+                            <td class="p-4">${getStatusBadge(item.acao)}</td>
+                            <td class="p-4 text-right"><button onclick="deleteItem('recusas', '${item.id}')" class="text-rose-400 hover:text-rose-200"><i class="fa-solid fa-trash"></i></button></td>
+                        </tr>
+                    `;
+                } else if (module === 'recebimento') {
+                    const items = item.items || [{ codigo: item.codigo || 'N/A', descricao: item.descricao || '', qtd: item.qtd || 0 }];
+                    const totalQtd = items.reduce((acc, curr) => acc + (parseFloat(curr.qtd) || 0), 0);
+                    const badges = items.map(it => `
+                        <div class="bg-blue-950/40 border border-blue-500/30 rounded-lg p-1.5 mb-1 text-xs">
+                            <span class="font-black text-gree-cyan">[${it.codigo}]</span>
+                            <span class="text-slate-300">${it.descricao}</span>
+                            <span class="ml-1 bg-gree-blue text-white font-extrabold px-1.5 py-0.5 rounded text-[10px]">x${it.qtd}</span>
+                        </div>
+                    `).join('');
+
+                    html += `
+                        <tr class="hover:bg-slate-900/40">
+                            <td class="p-4">${attachmentBtn}</td>
+                            <td class="p-4 text-xs text-slate-400">${item.data}</td>
+                            <td class="p-4 text-xs">
+                                <div class="font-bold text-slate-100">${item.nfe}</div>
+                                <div class="text-slate-400">${item.fornecedor}</div>
+                            </td>
+                            <td class="p-4 min-w-[250px]">${badges}</td>
+                            <td class="p-4 text-center font-black text-gree-cyan text-base">${totalQtd}</td>
+                            <td class="p-4 text-xs font-semibold text-slate-300">${item.lote}</td>
+                            <td class="p-4">${getStatusBadge(item.status)}</td>
+                            <td class="p-4 text-right"><button onclick="deleteItem('recebimento', '${item.id}')" class="text-rose-400 hover:text-rose-200"><i class="fa-solid fa-trash"></i></button></td>
+                        </tr>
+                    `;
+                } else if (module === 'pendencias-clientes') {
+                    html += `
+                        <tr class="hover:bg-slate-900/40">
+                            <td class="p-4">${attachmentBtn}</td>
+                            <td class="p-4 text-xs text-slate-400">${item.data}</td>
+                            <td class="p-4 font-bold text-slate-100">${item.destino}</td>
+                            <td class="p-4 font-mono font-bold text-gree-cyan">${item.codigo}</td>
+                            <td class="p-4 font-bold text-slate-100">${item.qtd}</td>
+                            <td class="p-4">${getStatusBadge(item.status)}</td>
+                            <td class="p-4 text-xs text-slate-300 max-w-xs truncate">${item.obs}</td>
+                            <td class="p-4 text-right"><button onclick="deleteItem('pendencias-clientes', '${item.id}')" class="text-rose-400 hover:text-rose-200"><i class="fa-solid fa-trash"></i></button></td>
+                        </tr>
+                    `;
+                } else if (module === 'no003') {
+                    html += `
+                        <tr class="hover:bg-slate-900/40">
+                            <td class="p-4">${attachmentBtn}</td>
+                            <td class="p-4 text-xs text-slate-400">${item.data}</td>
+                            <td class="p-4 font-mono font-black text-gree-cyan">${item.posicao}</td>
+                            <td class="p-4 font-bold text-slate-100">${item.codigo}</td>
+                            <td class="p-4 font-bold text-slate-100">${item.qtd}</td>
+                            <td class="p-4">${getPriorityBadge(item.prioridade)}</td>
+                            <td class="p-4">${getStatusBadge(item.status)}</td>
+                            <td class="p-4 text-right"><button onclick="deleteItem('no003', '${item.id}')" class="text-rose-400 hover:text-rose-200"><i class="fa-solid fa-trash"></i></button></td>
+                        </tr>
+                    `;
+                }
+            });
+
+            tbody.innerHTML = html;
+        };
+
+        window.openImageModal = function(src, title) {
+            document.getElementById('modal-img-src').src = src || SVG_SPLIT;
+            document.getElementById('modal-img-src').classList.remove('hidden');
+            document.getElementById('modal-doc-preview').classList.add('hidden');
+            
+            document.getElementById('modal-img-caption').innerText = title || 'Anexo Logístico Gree';
+            
+            const dlBtn = document.getElementById('modal-download-btn');
+            dlBtn.href = src || SVG_SPLIT;
+            dlBtn.download = title || 'Anexo_Gree.png';
+            
+            document.getElementById('image-modal').classList.remove('hidden');
+        };
+
+        window.openDocumentModal = function(fileData, fileName) {
+            document.getElementById('modal-img-src').classList.add('hidden');
+            document.getElementById('modal-doc-preview').classList.remove('hidden');
+            
+            document.getElementById('modal-doc-name').innerText = fileName;
+            document.getElementById('modal-img-caption').innerText = `Documento Anexo: ${fileName}`;
+            
+            const docIcon = document.getElementById('modal-doc-icon');
+            if (fileName.endsWith('.pdf')) {
+                docIcon.className = "fa-solid fa-file-pdf text-5xl text-rose-400";
+            } else {
+                docIcon.className = "fa-solid fa-file-excel text-5xl text-emerald-400";
+            }
+
+            const dlBtn = document.getElementById('modal-download-btn');
+            dlBtn.href = fileData;
+            dlBtn.download = fileName;
+            
+            document.getElementById('image-modal').classList.remove('hidden');
+        };
+
+        window.closeImageModal = function() {
+            document.getElementById('image-modal').classList.add('hidden');
+        };
+
+        window.updateClock = function() {
+            const now = new Date();
+            document.getElementById('current-time').innerText = now.toLocaleTimeString('pt-BR');
+        };
+
+        window.navigate = function(secId) {
+            window.currentActiveSection = secId;
+            const sections = ['dashboard', 'recebimento', 'recusas', 'pendencias-clientes', 'no003', 'relatorios'];
+            const titles = {
+                'dashboard': 'Dashboard Executivo 3D',
+                'recebimento': 'Recebimento de Materiais',
+                'recusas': 'Recusas de PA Gree',
+                'pendencias-clientes': 'Pendências Clientes',
+                'no003': 'Armazém NO003 (Drive-In)',
+                'relatorios': 'Relatório Consolidado Gree'
+            };
+
+            sections.forEach(s => {
+                const el = document.getElementById('sec-' + s);
+                const nav = document.getElementById('nav-' + s);
+                if (el) el.classList.add('hidden');
+                if (nav) {
+                    nav.classList.remove('bg-gree-blue', 'text-white', 'border-gree-cyan');
+                    nav.classList.add('text-slate-300');
+                }
+            });
+
+            const activeSec = document.getElementById('sec-' + secId);
+            const activeNav = document.getElementById('nav-' + secId);
+            if (activeSec) activeSec.classList.remove('hidden');
+            if (activeNav) {
+                activeNav.classList.add('bg-gree-blue', 'text-white', 'border-gree-cyan');
+                activeNav.classList.remove('text-slate-300');
+            }
+
+            document.getElementById('page-title').innerText = titles[secId] || 'Gree Logistics 3D';
+
+            if (secId === 'dashboard') {
+                updateKPIs();
+                renderCharts();
+            } else if (secId === 'relatorios') {
+                generateReport();
+            } else {
+                renderTable(secId);
+            }
+        };
+
+        window.addPAItemRow = function(codigo = '', descricao = '', qtd = '') {
+            const container = document.getElementById('container-pa-items');
+            if (!container) return;
+
+            const row = document.createElement('div');
+            row.className = 'pa-item-row grid grid-cols-12 gap-2 items-center bg-slate-900/80 p-2.5 rounded-xl border border-slate-700/60';
+            row.innerHTML = `
+                <div class="col-span-12 sm:col-span-4">
+                    <input type="text" class="pa-codigo input-3d w-full px-3 py-1.5 text-xs font-bold rounded-lg uppercase" placeholder="Modelo / Código PA *" value="${codigo}" required>
+                </div>
+                <div class="col-span-12 sm:col-span-5">
+                    <input type="text" class="pa-descricao input-3d w-full px-3 py-1.5 text-xs rounded-lg" placeholder="Descrição *" value="${descricao}" required>
+                </div>
+                <div class="col-span-8 sm:col-span-2">
+                    <input type="number" step="1" min="1" class="pa-qtd input-3d w-full px-3 py-1.5 text-xs font-bold rounded-lg" placeholder="Qtd *" value="${qtd}" required>
+                </div>
+                <div class="col-span-4 sm:col-span-1 text-right">
+                    <button type="button" onclick="this.closest('.pa-item-row').remove()" class="text-rose-400 hover:text-rose-200 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            `;
+            container.appendChild(row);
+        };
+
+        window.addRecItemRow = function(codigo = '', descricao = '', qtd = '') {
+            const container = document.getElementById('container-rec-items');
+            if (!container) return;
+
+            const row = document.createElement('div');
+            row.className = 'rec-item-row grid grid-cols-12 gap-2 items-center bg-slate-900/80 p-2.5 rounded-xl border border-slate-700/60';
+            row.innerHTML = `
+                <div class="col-span-12 sm:col-span-4">
+                    <input type="text" class="rec-codigo input-3d w-full px-3 py-1.5 text-xs font-bold rounded-lg uppercase" placeholder="Código Material *" value="${codigo}" required>
+                </div>
+                <div class="col-span-12 sm:col-span-5">
+                    <input type="text" class="rec-descricao input-3d w-full px-3 py-1.5 text-xs rounded-lg" placeholder="Descrição Componente *" value="${descricao}" required>
+                </div>
+                <div class="col-span-8 sm:col-span-2">
+                    <input type="number" step="0.01" min="0.01" class="rec-qtd input-3d w-full px-3 py-1.5 text-xs font-bold rounded-lg" placeholder="Qtd *" value="${qtd}" required>
+                </div>
+                <div class="col-span-4 sm:col-span-1 text-right">
+                    <button type="button" onclick="this.closest('.rec-item-row').remove()" class="text-rose-400 hover:text-rose-200 p-1.5"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            `;
+            container.appendChild(row);
+        };
+
+        window.updateKPIs = function() {
+            document.getElementById('kpi-recebimento').innerText = window.appData.recebimento.length;
+            document.getElementById('kpi-recusas').innerText = window.appData.recusas.length;
+            document.getElementById('kpi-pend-clientes').innerText = window.appData['pendencias-clientes'].length;
+            document.getElementById('kpi-no003').innerText = window.appData.no003.length;
+        };
+
+        window.renderCharts = function() {
+            const ctxStatus = document.getElementById('chartStatus');
+            const ctxMotivos = document.getElementById('chartMotivos');
+
+            if (!ctxStatus || !ctxMotivos) return;
+
+            if (chartStatusInstance) chartStatusInstance.destroy();
+            if (chartMotivosInstance) chartMotivosInstance.destroy();
+
+            chartStatusInstance = new Chart(ctxStatus, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Recebimentos', 'Recusas PA', 'Pendências Clientes', 'NO003 Drive-In'],
+                    datasets: [{
+                        data: [window.appData.recebimento.length, window.appData.recusas.length, window.appData['pendencias-clientes'].length, window.appData.no003.length],
+                        backgroundColor: ['#00a3e0', '#e11d48', '#f59e0b', '#00a859'],
+                        borderWidth: 0
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#f8fafc' } } } }
+            });
+
+            const motivosMap = {};
+            window.appData.recusas.forEach(r => { motivosMap[r.motivo] = (motivosMap[r.motivo] || 0) + 1; });
+
+            chartMotivosInstance = new Chart(ctxMotivos, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(motivosMap).length ? Object.keys(motivosMap) : ['Sem Registros'],
+                    datasets: [{
+                        label: 'Ocorrências por Motivo',
+                        data: Object.values(motivosMap).length ? Object.values(motivosMap) : [0],
+                        backgroundColor: '#00a3e0',
+                        borderRadius: 8
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#94a3b8' } }, y: { ticks: { color: '#94a3b8' } } } }
+            });
+        };
+
+        window.generateReport = function() {
+            document.getElementById('report-date').innerText = new Date().toLocaleDateString('pt-BR');
+            const filtro = document.getElementById('relatorio-filtro-modulo').value;
+            const tbody = document.getElementById('report-table-body');
+            tbody.innerHTML = '';
+
+            document.getElementById('report-summary-recusas').innerText = window.appData.recusas.length;
+            document.getElementById('report-summary-pendencias').innerText = window.appData['pendencias-clientes'].length;
+            document.getElementById('report-summary-no003').innerText = window.appData.no003.length;
+
+            let records = [];
+            if (filtro === 'TODOS' || filtro === 'recusas') {
+                window.appData.recusas.forEach(i => records.push({ modulo: 'Recusa PA', codigo: (i.items || []).map(x => x.codigo).join(', '), qtd: (i.items || []).reduce((a,b)=>a+(parseInt(b.qtd)||0),0), ref: i.cliente, status: i.motivo, foto: i.foto, fileName: i.fileName }));
+            }
+            if (filtro === 'TODOS' || filtro === 'recebimento') {
+                window.appData.recebimento.forEach(i => records.push({ modulo: 'Recebimento', codigo: (i.items || []).map(x => x.codigo).join(', '), qtd: (i.items || []).reduce((a,b)=>a+(parseFloat(b.qtd)||0),0), ref: i.fornecedor, status: i.status, foto: i.foto, fileName: i.fileName }));
+            }
+            if (filtro === 'TODOS' || filtro === 'pendencias-clientes') {
+                window.appData['pendencias-clientes'].forEach(i => records.push({ modulo: 'Pend. Cliente', codigo: i.codigo, qtd: i.qtd, ref: i.destino, status: i.status, foto: i.foto, fileName: i.fileName }));
+            }
+            if (filtro === 'TODOS' || filtro === 'no003') {
+                window.appData.no003.forEach(i => records.push({ modulo: 'NO003', codigo: i.codigo, qtd: i.qtd, ref: i.posicao, status: i.status, foto: i.foto, fileName: i.fileName }));
+            }
+
+            records.forEach(r => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-800/40';
+                tr.innerHTML = `
+                    <td class="p-3"><span class="font-mono text-[10px] text-gree-cyan font-bold">${r.fileName || 'Anexo'}</span></td>
+                    <td class="p-3 font-bold text-gree-cyan">${r.modulo}</td>
+                    <td class="p-3 font-semibold text-slate-200">${r.codigo}</td>
+                    <td class="p-3 font-bold text-white">${r.qtd}</td>
+                    <td class="p-3 text-slate-400">${r.ref}</td>
+                    <td class="p-3 font-bold text-slate-300">${r.status}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        };
+
+        window.exportCSV = function(moduleKey) {
+            let dataToExport = [];
+            if (moduleKey === 'all') {
+                Object.keys(window.appData).forEach(k => {
+                    window.appData[k].forEach(i => dataToExport.push({ modulo: k, ...i }));
+                });
+            } else {
+                dataToExport = window.appData[moduleKey] || [];
+            }
+
+            if (dataToExport.length === 0) {
+                showToast('Sem dados para exportação!');
+                return;
+            }
+
+            let csv = "data:text/csv;charset=utf-8,\uFEFF";
+            csv += Object.keys(dataToExport[0]).filter(k => k !== 'foto').join(";") + "\r\n";
+
+            dataToExport.forEach(row => {
+                const line = Object.keys(row).filter(k => k !== 'foto').map(k => `"${row[k]}"`).join(";");
+                csv += line + "\r\n";
+            });
+
+            const link = document.createElement("a");
+            link.setAttribute("href", encodeURI(csv));
+            link.setAttribute("download", `relatorio_gree_3d_${moduleKey}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showToast('Arquivo CSV exportado com sucesso!');
+        };
+
+        function getStatusBadge(status) {
+            return `<span class="px-2.5 py-1 text-[10px] font-black rounded-full border border-slate-700 bg-slate-800 text-gree-cyan">${status}</span>`;
+        }
+
+        function getPriorityBadge(priority) {
+            return `<span class="px-2 py-0.5 text-[10px] font-black rounded border border-rose-500/40 bg-rose-950/40 text-rose-300">${priority}</span>`;
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-message').innerText = msg;
+            toast.classList.remove('translate-y-24', 'opacity-0');
+            setTimeout(() => toast.classList.add('translate-y-24', 'opacity-0'), 3500);
+        }
+    </script>
+</body>
+</html>
